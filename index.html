@@ -431,7 +431,7 @@ function renderGrid() {
   ).join('');
   /* FIX: Player açıkken tvSetFocus çağırma → başıboş yeşil kutu oluşmaz */
   if (isTV && !document.getElementById('player-overlay').classList.contains('active')) {
-    setTimeout(() => tvSetFocus(tvIdx >= 0 ? tvIdx : 0), 80);
+    requestAnimationFrame(function() { tvSetFocus(tvIdx >= 0 ? tvIdx : 0); });
   }
 }
 
@@ -462,6 +462,7 @@ function playChannel(id, src) {
   pctrl.style.display='none';
 
   /* Player overlay aç — spinner hemen görünür (siyah bg) */
+  pFirstPlay = true;
   document.getElementById('player-overlay').classList.add('active');
   document.getElementById('pctrl-name').textContent = item.name;
   pspin.classList.add('show');
@@ -538,7 +539,13 @@ function playChannel(id, src) {
   }
 }
 
-pvid.addEventListener('playing', function() { pspin.classList.remove('show'); showPCtrl(); });
+/* pFirstPlay: her kanal açılışında sadece bir kez kontrol göster, rebuffer'da gösterme */
+let pFirstPlay = false;
+
+pvid.addEventListener('playing', function() {
+  pspin.classList.remove('show');
+  if (pFirstPlay) { pFirstPlay = false; showPCtrl(); }
+});
 pvid.addEventListener('waiting', function() { pspin.classList.add('show'); });
 pvid.addEventListener('play',  function() {
   var icon = document.getElementById('pplay-icon');
@@ -558,10 +565,10 @@ function showPCtrl() {
   clearTimeout(pCtrlTimer);
   pCtrlTimer = setTimeout(function() {
     pctrl.classList.remove('visible');
-    /* Player kontrolleri gizlenince TV focus da temizlenir */
+    /* Kontroller gizlenince player TV focus da sıfırlanır */
     playerTvClearFocus();
-    playerTvIdx = -1;
-  }, 3500);
+    playerTvRow = 1; playerTvCol = 0;
+  }, 4000);
 }
 document.getElementById('player-overlay').addEventListener('touchstart', function() { if(!pIsEmbed) showPCtrl(); }, {passive:true});
 document.getElementById('player-overlay').addEventListener('click',      function() { if(!pIsEmbed) showPCtrl(); });
@@ -571,9 +578,11 @@ function closePlayer() {
   pctrl.style.display='none';
   pctrl.classList.remove('visible');
   pspin.classList.remove('show');
-  /* Player kapanınca TV player focus temizle */
+  pFirstPlay = false;
+  clearTimeout(pCtrlTimer);
+  /* Player kapanınca player TV focus tamamen temizle */
   playerTvClearFocus();
-  playerTvIdx = -1;
+  playerTvRow = 1; playerTvCol = 0;
   if (hlsInst) { try{hlsInst.destroy();}catch(e){} hlsInst=null; }
   try { pvid.pause(); pvid.removeAttribute('src'); pvid.load(); } catch(e) {}
   pembed.style.display='none';
@@ -582,7 +591,9 @@ function closePlayer() {
     if (document.fullscreenElement || document.webkitFullscreenElement)
       (document.exitFullscreen || document.webkitExitFullscreen).call(document).catch(function(){});
   } catch(e) {}
-  if (isTV) setTimeout(function() { tvSyncFocus(); }, 100);
+  /* tvSyncFocus: iptal edilebilir timer ile — kullanıcı tuşa basarsa yarış olmaz */
+  clearTimeout(tvSyncTimer);
+  if (isTV) tvSyncTimer = setTimeout(tvSyncFocus, 80);
 }
 
 function pTogglePlay() {
@@ -620,7 +631,7 @@ function playerEmbedFs() {
 /* ==========================================================
    TV D-PAD NAVİGASYON
 ========================================================== */
-let tvZone = 'grid', tvIdx = -1;
+let tvZone = 'grid', tvIdx = -1, tvSyncTimer = null;
 
 function tvGetItems() {
   if (tvZone === 'cat') return Array.from(document.querySelectorAll('#cat-bar .cat-btn'));
@@ -633,49 +644,59 @@ function tvSetFocus(idx) {
   var items = tvGetItems();
   if (!items.length) return;
   tvClearFocus();
-  tvIdx = Math.max(0, Math.min(idx, items.length-1));
+  tvIdx = Math.max(0, Math.min(idx, items.length - 1));
   items[tvIdx].classList.add('tv-focus');
-  items[tvIdx].scrollIntoView({ block:'nearest', behavior:'smooth' });
+  /* instant: smooth scroll Android WebView'de donmaya neden oluyor */
+  try { items[tvIdx].scrollIntoView({ block:'nearest', behavior:'instant' }); } catch(e) {
+    try { items[tvIdx].scrollIntoView(false); } catch(e2) {}
+  }
 }
 function tvSyncFocus() {
   if (!isTV) return;
+  clearTimeout(tvSyncTimer);
   tvZone = 'grid';
   var items = tvGetItems();
-  if (!items.length) { tvIdx=-1; return; }
+  if (!items.length) { tvIdx = -1; return; }
   var ai = items.findIndex(function(el) { return el.dataset.id === activeId; });
-  tvSetFocus(ai >= 0 ? ai : Math.max(0, Math.min(tvIdx, items.length-1)));
+  tvSetFocus(ai >= 0 ? ai : Math.max(0, Math.min(tvIdx, items.length - 1)));
 }
 
 /* ==========================================================
    PLAYER TV NAVİGASYON
    ─────────────────────────────────────────────────────────
-   Sıra: [Geri Butonu] [Oynat/Duraklat] [Sessiz] [Tam Ekran]
-   Sol/Sağ: butonlar arası gezinme
-   Enter: odaklanan butonu aktifleştir
-   Back/Geri: player'ı kapat
-========================================================== */
-let playerTvIdx = -1;
+   Üst satır (row 0):  [← Geri]
+   Alt satır (row 1):  [⏯ Oynat/Duraklat]  [🔇 Sessiz]  [⛶ Tam Ekran]
 
-function playerTvGetItems() {
-  var backBtn = document.querySelector('#pctrl-top .pbtn-back');
-  var ctrlBtns = Array.from(document.querySelectorAll('#pctrl .pctrl-btn'));
-  return [backBtn].concat(ctrlBtns).filter(Boolean);
+   Yukarı  → row 1 → row 0 (Geri butonuna)
+   Aşağı   → row 0 → row 1 (ilk alt butona)
+   Sol/Sağ → aynı satır içinde
+   Enter   → odaklanan butonu çalıştır
+   Back    → player'ı kapat
+========================================================== */
+let playerTvRow = 1, playerTvCol = 0;
+
+function playerTvGetRowItems(row) {
+  if (row === 0) {
+    var b = document.querySelector('#pctrl-top .pbtn-back');
+    return b ? [b] : [];
+  }
+  return Array.from(document.querySelectorAll('#pctrl .pctrl-btn'));
 }
 function playerTvClearFocus() {
-  document.querySelectorAll('.pbtn-back.tv-focus, .pctrl-btn.tv-focus').forEach(function(el) {
+  document.querySelectorAll('.pbtn-back.tv-focus,.pctrl-btn.tv-focus').forEach(function(el) {
     el.classList.remove('tv-focus');
   });
 }
-function playerTvSetFocus(idx) {
-  var items = playerTvGetItems();
+function playerTvSetFocus(row, col) {
+  var items = playerTvGetRowItems(row);
   if (!items.length) return;
   playerTvClearFocus();
-  playerTvIdx = Math.max(0, Math.min(idx, items.length - 1));
-  items[playerTvIdx].classList.add('tv-focus');
+  playerTvRow = row;
+  playerTvCol = Math.max(0, Math.min(col, items.length - 1));
+  items[playerTvCol].classList.add('tv-focus');
 }
 
 document.addEventListener('keydown', function(e) {
-  /* ── Tuş bilgilerini en başta al ── */
   var key  = e.key  || '';
   var code = e.keyCode || 0;
   var DOWN  = key==='ArrowDown'  || code===40;
@@ -686,65 +707,58 @@ document.addEventListener('keydown', function(e) {
   var BACK  = key==='Backspace'||key==='Back'||key==='GoBack'||code===8||code===461||code===10009;
 
   /*
-   * FIX: İlk D-pad / ENTER / BACK tuşuna basıldığında TV modunu otomatik
-   * aktifleştir. Böylece UA tespiti başarısız olan tüm TV Box'lar da
-   * çalışır — kumandaya dokunan herhangi bir kullanıcı anında TV moduna geçer.
+   * İlk D-pad / ENTER / BACK tuşuna basıldığında TV modunu otomatik aktifleştir.
+   * UA tespiti başarısız olan tüm TV Box'lar da böylece çalışır.
    */
   if (!isTV) {
-    var isDpad = DOWN || UP || RIGHT || LEFT || ENTER || BACK;
-    if (isDpad) {
-      activateTVMode();
-    } else {
-      return;
-    }
+    if (DOWN || UP || RIGHT || LEFT || ENTER || BACK) { activateTVMode(); }
+    else { return; }
   }
 
   /* ── Player açıkken ── */
   if (document.getElementById('player-overlay').classList.contains('active')) {
     e.preventDefault();
+
+    /* Geri tuşu her zaman player'ı kapatır */
     if (BACK) { closePlayer(); return; }
 
-    var ctrlVisible = pctrl.classList.contains('visible');
-
-    if (!ctrlVisible) {
-      /* Kontroller gizliyken herhangi bir tuş → göster ve ilk butona odaklan */
+    /* Kontroller gizliyse: herhangi bir tuş → göster + varsayılan odak */
+    if (!pctrl.classList.contains('visible')) {
       showPCtrl();
-      playerTvSetFocus(playerTvIdx >= 0 ? playerTvIdx : 1); /* varsayılan: oynat/duraklat */
+      playerTvSetFocus(playerTvRow, playerTvCol);
       return;
     }
 
-    /* Kontroller görünürken: sol/sağ ile butonlar arası geçiş */
-    if (RIGHT) {
-      if (playerTvIdx < 0) playerTvSetFocus(1);
-      else playerTvSetFocus(playerTvIdx + 1);
+    /* Kontroller görünürken navigasyon */
+    if (UP) {
+      /* Alt satırdan üst satıra (Geri butonu) */
+      if (playerTvRow === 1) playerTvSetFocus(0, 0);
+      showPCtrl();
+    } else if (DOWN) {
+      /* Üst satırdan alt satıra (oynat/duraklat) */
+      if (playerTvRow === 0) playerTvSetFocus(1, playerTvCol);
+      showPCtrl();
+    } else if (RIGHT) {
+      playerTvSetFocus(playerTvRow, playerTvCol + 1);
       showPCtrl();
     } else if (LEFT) {
-      if (playerTvIdx < 0) playerTvSetFocus(0);
-      else playerTvSetFocus(playerTvIdx - 1);
+      playerTvSetFocus(playerTvRow, playerTvCol - 1);
       showPCtrl();
     } else if (ENTER) {
-      if (playerTvIdx < 0) {
-        playerTvSetFocus(1);
-        showPCtrl();
-      } else {
-        var pitems = playerTvGetItems();
-        if (pitems[playerTvIdx]) pitems[playerTvIdx].click();
-        showPCtrl();
-      }
-    } else if (DOWN || UP) {
-      /* Yukarı/Aşağı player içinde anlam ifade etmez, sadece kontrolü tazele */
+      var pitems = playerTvGetRowItems(playerTvRow);
+      if (pitems[playerTvCol]) { pitems[playerTvCol].click(); }
       showPCtrl();
     }
     return;
   }
 
+  /* ── Kanal listesi / kategori barı ── */
   e.preventDefault();
 
-  /* ── Kanal listesindeyken geri tuşu → direkt çıkış (modal yok) ── */
-  if (BACK) {
-    doExit();
-    return;
-  }
+  /* Bekleyen tvSync iptal et — kullanıcı navigasyonu öncelikli */
+  clearTimeout(tvSyncTimer);
+
+  if (BACK) { doExit(); return; }
 
   var items = tvGetItems();
   if (!items.length) return;
@@ -754,10 +768,10 @@ document.addEventListener('keydown', function(e) {
   var inGrid = tvZone === 'grid';
 
   if (DOWN) {
-    if (inCat)  { tvZone='grid'; tvIdx=-1; tvSetFocus(0); }
-    else         { tvSetFocus(tvIdx + 2); }
+    if (inCat) { tvZone = 'grid'; tvIdx = -1; tvSetFocus(0); }
+    else        { tvSetFocus(tvIdx + 2); }
   } else if (UP) {
-    if (inGrid && tvIdx < 2) { tvZone='cat'; tvIdx=-1; tvSetFocus(0); }
+    if (inGrid && tvIdx < 2) { tvZone = 'cat'; tvIdx = -1; tvSetFocus(0); }
     else if (inGrid)          { tvSetFocus(tvIdx - 2); }
   } else if (RIGHT) {
     tvSetFocus(tvIdx + 1);
