@@ -3,6 +3,8 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"/>
+<!-- APK uyumluluğu: Android 5.0+ (API 21+) tüm cihazları kapsar -->
+<meta http-equiv="X-UA-Compatible" content="IE=edge"/>
 <title>PanzerSports</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.7/dist/hls.min.js"></script>
@@ -323,9 +325,29 @@ Test | Spor | HD |  | https://via.placeholder.com/44?text=T
 <script>
 /* ==========================================================
    CİHAZ TESPİTİ
+   ────────────────────────────────────────────────────────
+   FIX: "let" kullandık (const değil) → dinamik aktifleştirme mümkün.
+   FIX: typeof Android koşulu kaldırıldı — Median.co WebView bu bridge'i
+        açmaz. Artık UA + ekran boyutu/touch kombinasyonu kullanılıyor.
+   FIX: UA regex'e yaygın TV Box modelleri eklendi (H96, X96, MiBox,
+        SHIELD, Fire TV, T95, TX3, OTT vb.)
+   FIX: İlk D-pad tuşuna basıldığında otomatik TV modu aktifleşir →
+        hiçbir TV Box kaçmaz.
 ========================================================== */
-const isTV = /Android TV|SMART-TV|SmartTV|Tizen|webOS|NetCast|AFTS|AFTB|AFTMM|HbbTV|CrKey|GoogleTV|Chromecast|BRAVIA|PHILIPSTV|LOEWE|VESTEL|ARCELIK/i.test(navigator.userAgent)
-  || (typeof Android !== 'undefined' && window.screen && window.screen.width >= 960 && !('ontouchstart' in window));
+let isTV = /Android TV|SMART-TV|SmartTV|Tizen|webOS|NetCast|AFTS|AFTB|AFTMM|HbbTV|CrKey|GoogleTV|Chromecast|BRAVIA|PHILIPSTV|LOEWE|VESTEL|ARCELIK|MiTV|Mi Box|MiBox|TV Box|TVBox|H96|X96|MX10|TX3|T95|OTT|SHIELD|Fire TV|FireTV|AFTKA|AFTT|AFTSSS|Stick/i.test(navigator.userAgent)
+  || (window.screen && window.screen.width >= 1280 && !('ontouchstart' in window))
+  || (window.screen && window.screen.width >= 960 && window.screen.height >= 540 && window.devicePixelRatio <= 1.5 && !('ontouchstart' in window));
+
+/* TV modunu dinamik olarak etkinleştir (ilk D-pad tuşunda tetiklenir) */
+function activateTVMode() {
+  if (isTV) return;
+  isTV = true;
+  document.body.classList.add('tv-mode');
+  document.documentElement.style.cursor = 'none';
+  tvZone = 'grid';
+  setTimeout(function() { tvSetFocus(0); }, 80);
+}
+
 if (isTV) {
   document.body.classList.add('tv-mode');
   document.documentElement.style.cursor = 'none';
@@ -597,7 +619,7 @@ function tvSyncFocus() {
 }
 
 document.addEventListener('keydown', function(e) {
-  if (!isTV) return;
+  /* ── Tuş bilgilerini en başta al ── */
   var key  = e.key  || '';
   var code = e.keyCode || 0;
   var DOWN  = key==='ArrowDown'  || code===40;
@@ -606,6 +628,20 @@ document.addEventListener('keydown', function(e) {
   var LEFT  = key==='ArrowLeft'  || code===37;
   var ENTER = key==='Enter'      || code===13;
   var BACK  = key==='Backspace'||key==='Back'||key==='GoBack'||code===8||code===461||code===10009;
+
+  /*
+   * FIX: İlk D-pad / ENTER / BACK tuşuna basıldığında TV modunu otomatik
+   * aktifleştir. Böylece UA tespiti başarısız olan tüm TV Box'lar da
+   * çalışır — kumandaya dokunan herhangi bir kullanıcı anında TV moduna geçer.
+   */
+  if (!isTV) {
+    var isDpad = DOWN || UP || RIGHT || LEFT || ENTER || BACK;
+    if (isDpad) {
+      activateTVMode();
+    } else {
+      return;
+    }
+  }
 
   /* ── Player açıkken ── */
   if (document.getElementById('player-overlay').classList.contains('active')) {
