@@ -119,10 +119,21 @@ header{background:var(--surface);border-bottom:1px solid var(--border);height:56
 #pvol-slider{-webkit-appearance:none;appearance:none;width:68px;height:3px;border-radius:3px;background:rgba(255,255,255,.28);outline:none;cursor:pointer;}
 #pvol-slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:13px;height:13px;border-radius:50%;background:#fff;cursor:pointer;}
 body.tv-mode #pvol-slider{display:none;}
+/* TV: player buton odak stilleri */
 .pctrl-btn.tv-focused{background:var(--primary)!important;box-shadow:0 0 16px rgba(34,197,94,.6)!important;transform:scale(1.1)!important;}
+.pbtn-back.tv-focus{background:var(--primary)!important;border-color:var(--primary)!important;box-shadow:0 0 0 3px #fff,0 0 18px rgba(34,197,94,.7)!important;transform:scale(1.12)!important;}
+.pctrl-btn.tv-focus{background:var(--primary)!important;box-shadow:0 0 0 3px #fff,0 0 18px rgba(34,197,94,.7)!important;transform:scale(1.12)!important;}
 
 /* TV: cursor gizle */
 body.tv-mode *{cursor:none!important;}
+/* FIX: TV modunda native WebView focus ring'ini tamamen bastır (turuncu/sarı kutu) */
+body.tv-mode *:focus{outline:none!important;box-shadow:none!important;-webkit-tap-highlight-color:transparent!important;}
+/* Sadece .tv-focus class'ı alan elemanlar görsel odak gösterir */
+body.tv-mode .hdr-btn:focus,
+body.tv-mode .cat-btn:focus:not(.tv-focus),
+body.tv-mode .card:focus:not(.tv-focus),
+body.tv-mode .pctrl-btn:focus,
+body.tv-mode .pbtn-back:focus{outline:none!important;box-shadow:none!important;}
 </style>
 </head>
 <body>
@@ -344,6 +355,8 @@ function activateTVMode() {
   isTV = true;
   document.body.classList.add('tv-mode');
   document.documentElement.style.cursor = 'none';
+  /* FIX: Aktif native focus'u kaldır → turuncu WebView ring kaybolur */
+  try { if (document.activeElement) document.activeElement.blur(); } catch(e) {}
   tvZone = 'grid';
   setTimeout(function() { tvSetFocus(0); }, 80);
 }
@@ -351,6 +364,8 @@ function activateTVMode() {
 if (isTV) {
   document.body.classList.add('tv-mode');
   document.documentElement.style.cursor = 'none';
+  /* FIX: Sayfa yüklenirken native focus'u temizle */
+  try { if (document.activeElement) document.activeElement.blur(); } catch(e) {}
 }
 
 /* ==========================================================
@@ -414,7 +429,10 @@ function renderGrid() {
       </div>
     </div>`
   ).join('');
-  if (isTV) setTimeout(() => tvSetFocus(0), 80);
+  /* FIX: Player açıkken tvSetFocus çağırma → başıboş yeşil kutu oluşmaz */
+  if (isTV && !document.getElementById('player-overlay').classList.contains('active')) {
+    setTimeout(() => tvSetFocus(tvIdx >= 0 ? tvIdx : 0), 80);
+  }
 }
 
 /* ==========================================================
@@ -431,6 +449,8 @@ function playChannel(id, src) {
   const pool = src==='m' ? matches : channels;
   const item = pool.find(c => c.id===id) || [...channels,...matches].find(c=>c.id===id);
   if (!item) return;
+  /* FIX: renderGrid öncesi focus kutusunu temizle → başıboş kutu kalmaz */
+  tvClearFocus();
   renderGrid();
 
   /* Temizle */
@@ -536,7 +556,12 @@ function showPCtrl() {
   pctrl.classList.add('visible');
   pctrl.style.display = 'block';
   clearTimeout(pCtrlTimer);
-  pCtrlTimer = setTimeout(function() { pctrl.classList.remove('visible'); }, 3500);
+  pCtrlTimer = setTimeout(function() {
+    pctrl.classList.remove('visible');
+    /* Player kontrolleri gizlenince TV focus da temizlenir */
+    playerTvClearFocus();
+    playerTvIdx = -1;
+  }, 3500);
 }
 document.getElementById('player-overlay').addEventListener('touchstart', function() { if(!pIsEmbed) showPCtrl(); }, {passive:true});
 document.getElementById('player-overlay').addEventListener('click',      function() { if(!pIsEmbed) showPCtrl(); });
@@ -546,6 +571,9 @@ function closePlayer() {
   pctrl.style.display='none';
   pctrl.classList.remove('visible');
   pspin.classList.remove('show');
+  /* Player kapanınca TV player focus temizle */
+  playerTvClearFocus();
+  playerTvIdx = -1;
   if (hlsInst) { try{hlsInst.destroy();}catch(e){} hlsInst=null; }
   try { pvid.pause(); pvid.removeAttribute('src'); pvid.load(); } catch(e) {}
   pembed.style.display='none';
@@ -618,6 +646,34 @@ function tvSyncFocus() {
   tvSetFocus(ai >= 0 ? ai : Math.max(0, Math.min(tvIdx, items.length-1)));
 }
 
+/* ==========================================================
+   PLAYER TV NAVİGASYON
+   ─────────────────────────────────────────────────────────
+   Sıra: [Geri Butonu] [Oynat/Duraklat] [Sessiz] [Tam Ekran]
+   Sol/Sağ: butonlar arası gezinme
+   Enter: odaklanan butonu aktifleştir
+   Back/Geri: player'ı kapat
+========================================================== */
+let playerTvIdx = -1;
+
+function playerTvGetItems() {
+  var backBtn = document.querySelector('#pctrl-top .pbtn-back');
+  var ctrlBtns = Array.from(document.querySelectorAll('#pctrl .pctrl-btn'));
+  return [backBtn].concat(ctrlBtns).filter(Boolean);
+}
+function playerTvClearFocus() {
+  document.querySelectorAll('.pbtn-back.tv-focus, .pctrl-btn.tv-focus').forEach(function(el) {
+    el.classList.remove('tv-focus');
+  });
+}
+function playerTvSetFocus(idx) {
+  var items = playerTvGetItems();
+  if (!items.length) return;
+  playerTvClearFocus();
+  playerTvIdx = Math.max(0, Math.min(idx, items.length - 1));
+  items[playerTvIdx].classList.add('tv-focus');
+}
+
 document.addEventListener('keydown', function(e) {
   /* ── Tuş bilgilerini en başta al ── */
   var key  = e.key  || '';
@@ -645,8 +701,40 @@ document.addEventListener('keydown', function(e) {
 
   /* ── Player açıkken ── */
   if (document.getElementById('player-overlay').classList.contains('active')) {
-    if (BACK)  { e.preventDefault(); closePlayer(); }
-    if (ENTER) { e.preventDefault(); showPCtrl(); }
+    e.preventDefault();
+    if (BACK) { closePlayer(); return; }
+
+    var ctrlVisible = pctrl.classList.contains('visible');
+
+    if (!ctrlVisible) {
+      /* Kontroller gizliyken herhangi bir tuş → göster ve ilk butona odaklan */
+      showPCtrl();
+      playerTvSetFocus(playerTvIdx >= 0 ? playerTvIdx : 1); /* varsayılan: oynat/duraklat */
+      return;
+    }
+
+    /* Kontroller görünürken: sol/sağ ile butonlar arası geçiş */
+    if (RIGHT) {
+      if (playerTvIdx < 0) playerTvSetFocus(1);
+      else playerTvSetFocus(playerTvIdx + 1);
+      showPCtrl();
+    } else if (LEFT) {
+      if (playerTvIdx < 0) playerTvSetFocus(0);
+      else playerTvSetFocus(playerTvIdx - 1);
+      showPCtrl();
+    } else if (ENTER) {
+      if (playerTvIdx < 0) {
+        playerTvSetFocus(1);
+        showPCtrl();
+      } else {
+        var pitems = playerTvGetItems();
+        if (pitems[playerTvIdx]) pitems[playerTvIdx].click();
+        showPCtrl();
+      }
+    } else if (DOWN || UP) {
+      /* Yukarı/Aşağı player içinde anlam ifade etmez, sadece kontrolü tazele */
+      showPCtrl();
+    }
     return;
   }
 
